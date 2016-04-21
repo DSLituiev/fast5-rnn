@@ -4,13 +4,22 @@ import numpy as np
 import h5py
 import numpy as np
 import os
-# import re
-# import dateutil.parser
-# import datetime
+from sklearn.preprocessing import OneHotEncoder
 import logging
+from dnahashing import dnahash
 
 fX = np.float32
 BASE_DIR = ""
+
+def maybe_one_hot(x, onehot = False):
+    if onehot:
+        enc = OneHotEncoder(n_values=NBASES**SEQLEN)
+        # yfun = lambda x: enc.fit_transform( np.array([ dnahash(y) for y in x]).reshape(-1,1)  )
+        yfun = lambda x: np.array([ dnahash(y) for y in x]).reshape(-1,1)
+    else:
+        yfun = lambda x: x
+    return yfun(x)
+
 
 def preproc_event(mean, std, length):
     mean = mean / 100.0 - 0.66
@@ -83,8 +92,10 @@ def read_data_gen(directory_name):
 SEQLEN=6
 NBASES = 4
 BASEHASH = {"A":NBASES-4, "C":NBASES-3, "G":NBASES-2, "T":NBASES-1 }
+
 def dnahash(seq):
     out = 0
+    logging.debug("seq[:5]\t%s"% repr(seq[:5]) )
     for nn, xx in enumerate(seq.upper()):
         out += (NBASES**nn) * BASEHASH[xx]
     return out
@@ -103,22 +114,51 @@ def get_data_from_summary_file(summary_file):
 def get_batch_from_summary_file( summary_file, batch_size = 1, ):
     x_batch = []
     y_batch = []
-    logging.info( "batch_size = %u" % batch_size )
+    logging.info( "batch_size = %s" % repr(batch_size) )
     for nn, (X, Y, ) in enumerate(get_data_from_summary_file(summary_file)):
         x_batch.append(X)
         y_batch.append(Y)
         if (nn + 1) % batch_size == 0:
             out = ((x_batch), (y_batch) )
-            logging.info( "sample # %u" % (nn+1) )
-            logging.info( "\tlen = %u" % len(out) )
+            #logging.info( "sample # %u" % (nn+1) )
+            #logging.info( "\tlen = %u" % len(out) )
             yield out #(x_batch, y_batch)
             x_batch = []
             y_batch = []
     #raise StopIteration
 
+def get_batch_chunks_from_summary_file( summary_file, chunk_length, batch_size = 1, onehot = False ):
+    x_batch = []
+    y_batch = []
+    logging.info( "batch_size = %s" % repr(batch_size) )
 
-#import pandas as pd
-from sklearn.preprocessing import OneHotEncoder
+    def reshape(batch):
+        return np.transpose(np.dstack(batch),(2,1,0) )
+
+    for nn, (X, Y, ) in enumerate(get_data_from_summary_file(summary_file)):
+        #print( nn)
+        for jj in range( len(Y) // chunk_length):
+            #print( jj*chunk_length, (jj+1)*chunk_length)
+            x_batch.append(X[jj*chunk_length : (jj+1)*chunk_length])
+            y_batch.append(Y[jj*chunk_length : (jj+1)*chunk_length])
+            if (jj + 1) % batch_size == 0:
+                out = tuple(map(reshape, (x_batch, y_batch)))
+                #logging.info( "sample # %u" % (nn+1) )
+                #logging.info( "\tlen = %u" % len(out) )
+                yield out #(x_batch, y_batch)
+                x_batch = []
+                y_batch = []
+
+
+from scipy.sparse import csr_matrix
+
+def get_single_chunks_from_summary_file( summary_file, chunk_length, sparse = True):
+    for x,y in get_batch_chunks_from_summary_file(summary_file, chunk_length, batch_size=1, onehot=True):
+        x,y = tuple(map( lambda x : np.transpose(x, (0,2,1))[0] , [x,y] ))
+        #print( "y", y.shape )
+        y = csr_matrix((np.ones_like(y.ravel()), (np.arange(len(y)), y.ravel() )), shape = (len(y), NBASES**SEQLEN) ).todense()
+        yield x,y
+
 
 def get_data( directory_name, batch_size = 1, onehot = True, gen = read_data_gen ):
     x_batch = []
