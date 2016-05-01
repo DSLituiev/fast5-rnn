@@ -3,6 +3,7 @@ import numpy as np
 # import pickle
 import h5py
 import numpy as np
+import sys
 import os
 from sklearn.preprocessing import OneHotEncoder
 import logging
@@ -39,7 +40,7 @@ def extract_events(h5 , strand = "complement"):
         tdrift = h5[ prefix_const ].attrs["drift"]
     except KeyError as err:
         print(err, file = sys.stderr)
-        return np.array(), [], 0,0,0,0
+        return np.array([]), [], 0,0,0,0
     event_tuples = []
     base_from_step = []
     events = h5[ prefix_events ]
@@ -66,6 +67,8 @@ import pandas as pd
 def get_strand_data(filename, strand = "complement"):
     with h5py.File(filename, "r") as h5:
         events, bases, tshift, tdrift, tscale, tscale_sd = extract_events(h5 , strand = strand)
+        if len(events) == 0:
+            return np.array([]), np.array([])
         keys = events.dtype.fields.keys()
         events = pd.DataFrame({k: events[k] for k in keys})
 
@@ -127,7 +130,7 @@ def get_batch_from_summary_file( summary_file, batch_size = 1, ):
             y_batch = []
     #raise StopIteration
 
-def get_batch_chunks_from_summary_file( summary_file, chunk_length, batch_size = 1, onehot = False ):
+def get_batch_chunks_from_summary_file( summary_file, chunk_length, batch_size = 1, ):
     x_batch = []
     y_batch = []
     logging.info( "batch_size = %s" % repr(batch_size) )
@@ -153,10 +156,10 @@ def get_batch_chunks_from_summary_file( summary_file, chunk_length, batch_size =
 from scipy.sparse import csr_matrix
 
 def get_single_chunks_from_summary_file( summary_file, chunk_length, sparse = True):
-    for x,y in get_batch_chunks_from_summary_file(summary_file, chunk_length, batch_size=1, onehot=True):
+    for x,y in get_batch_chunks_from_summary_file(summary_file, chunk_length, batch_size=1, ):
         x,y = tuple(map( lambda x : np.transpose(x, (0,2,1))[0] , [x,y] ))
         #print( "y", y.shape )
-        y = csr_matrix((np.ones_like(y.ravel()), (np.arange(len(y)), y.ravel() )), shape = (len(y), NBASES**SEQLEN) ).todense()
+        y = np.asarray(csr_matrix((np.ones_like(y.ravel()), (np.arange(len(y)), y.ravel() )), shape = (len(y), NBASES**SEQLEN) ).todense())
         yield x,y
 
 
@@ -164,7 +167,7 @@ def get_data( directory_name, batch_size = 1, onehot = True, gen = read_data_gen
     x_batch = []
     y_batch = []
     if onehot:
-        enc = OneHotEncoder(n_values=NBASES**SEQLEN)
+        # enc = OneHotEncoder(n_values=NBASES**SEQLEN)
         # yfun = lambda x: enc.fit_transform( np.array([ dnahash(y) for y in x]).reshape(-1,1)  )
         yfun = lambda x: np.array([ dnahash(y) for y in x]).reshape(-1,1)
     else:
@@ -181,17 +184,31 @@ def get_data( directory_name, batch_size = 1, onehot = True, gen = read_data_gen
                 x_batch = []
                 y_batch = []
 
+def dump_set_into_h5(h5f, features, labels, filename):
+    g1 = h5f.create_group(filename)
+    print("%s" % (filename), file=sys.stderr)
+    g1.create_dataset("features", data=features.astype(np.float32))
+    g1.create_dataset("labels", data=labels)
+
 def read_and_dump(directory_name, outfile, onehot = True):
     if onehot:
-        enc = OneHotEncoder(n_values=NBASES**SEQLEN)
+        #enc = OneHotEncoder(n_values=NBASES**SEQLEN)
         # yfun = lambda x: enc.fit_transform( np.array([ dnahash(y) for y in x]).reshape(-1,1)  )
         yfun = lambda x: np.array([ dnahash(y) for y in x]).reshape(-1,1)
     else:
         yfun = lambda x: x
 
     with h5py.File( outfile.replace(".h5","") + '.h5', 'w') as h5f:
+        if not os.path.isdir(directory_name):
+            filename = directory_name
+            events, bases = get_strand_data(filename, strand = "template")
+            features = events[["length", "mean", "stdv"]].as_matrix()
+            labels = events["model_state"].as_matrix()
+            dump_set_into_h5(h5f, features, yfun(labels), filename)
+
         for nn, (features, labels, filename) in enumerate(read_data_gen(directory_name)):
-            g1 = h5f.create_group(filename)
-            print(nn)
-            g1.create_dataset("features", data= features.astype(np.float32))
-            g1.create_dataset("labels", data= yfun(labels))
+            if len(features) == 0 or len(labels) == 0:
+                print("skipping %s" % filename, file=sys.stderr)
+                continue
+            dump_set_into_h5(h5f, features, yfun(labels), filename)
+

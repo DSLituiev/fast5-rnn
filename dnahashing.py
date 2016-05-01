@@ -4,6 +4,7 @@ import numpy as np
 import h5py
 import numpy as np
 import os
+import sys
 from sklearn.preprocessing import OneHotEncoder
 import logging
 
@@ -62,6 +63,12 @@ def valid_transitions(y):
 def valid_transitions_hash(y, seq_len=6, NBASES=4):
     return [ NBASES*(y % NBASES**(SEQLEN-1)) + x for x in range(NBASES)]
 
+def valid_rev_transitions(y):
+    return [ x + y[:-1] for x in list("ATCG")]
+
+def valid_rev_transitions_hash(y, seq_len=6, NBASES=4):
+    return [ (y // NBASES) + x * NBASES**(seq_len-1)  for x in range(NBASES)]
+
 def get_transition_matrix(NBASES=NBASES, SEQLEN=SEQLEN):
     hashsize = NBASES**SEQLEN
     transition_matrix = np.zeros((hashsize, hashsize), dtype=int)
@@ -69,3 +76,42 @@ def get_transition_matrix(NBASES=NBASES, SEQLEN=SEQLEN):
         transition_matrix[nn, valid_transitions_hash(nn)] = 1
     return transition_matrix
 
+def get_rev_transition_matrix(NBASES=NBASES, SEQLEN=SEQLEN):
+    hashsize = NBASES**SEQLEN
+    transition_matrix = np.zeros((hashsize, hashsize), dtype=int)
+    for nn in range(NBASES**SEQLEN):
+        transition_matrix[nn, valid_rev_transitions_hash(nn)] = 1
+    return transition_matrix
+
+def crop_hash(y, fro=2, to = 4):
+    return (y % 4**to)  // 4**fro
+
+def hash_window_mapping(fro=2, to=4, n_input_states = None, seq_len=SEQLEN, nbases=NBASES):
+    """creates a windowing mapping matrix, e.g.:
+    AT[CG]GA -> CG
+    TC[GA]CG -> GA
+    ...
+    """
+    to_ = int(max(to, fro))
+    fro_ = int(min(to, fro))
+    to, fro = to_, fro_
+    if n_input_states is not None:
+        seq_len = int(np.log2(float(n_input_states))/np.log2(float(nbases)))
+    if seq_len<to:
+        raise ValueError( "end of the cropping window (%u) should be less than sequence length (%u)" %\
+                        (to, seq_len))
+
+    cropped_len = to-fro
+    n_cropped_states = nbases**cropped_len
+    if n_input_states is None:
+        n_input_states = nbases**seq_len
+    print("M: %u nt --> %u nt" % ( int(np.log2(float(n_input_states))/np.log2(float(nbases))), cropped_len), file=sys.stderr)
+    output_dim = (n_input_states, n_cropped_states )
+    M = np.zeros(output_dim)
+    for n in range(output_dim[0]):
+        M[n, crop_hash(n, fro=fro, to=to)] = 1
+    return M
+
+
+if __name__ == "__main__":
+    assert 0==np.sum((get_rev_transition_matrix() - get_transition_matrix().T)**2), "tranisition matrix is asymmetric!"
